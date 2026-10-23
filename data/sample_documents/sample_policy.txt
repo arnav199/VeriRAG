@@ -1,0 +1,13 @@
+VeriRAG Evaluation Sample Policy
+
+Retention
+Uploaded research documents are stored locally and kept until the researcher deletes them.
+
+Privacy
+Questions sent to a configured external language model may include retrieved passages. The sample policy does not state whether local files are encrypted at rest.
+
+Conflicting draft note
+A later draft note says records are removed after thirty days. The note does not explain whether it replaces the retention section.
+
+This small file is the source text for the sample evaluation PDF. The evaluation questions include answerable, partially answerable, unanswerable, and conflicting-evidence cases. The expected labels are intentionally blank until claims are annotated under a documented policy.
+
