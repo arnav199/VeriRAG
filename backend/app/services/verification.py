@@ -41,7 +41,8 @@ def extract_claims(answer: str, llm) -> list[str]:
 def heuristic_verify(claim: str, evidence: list[EvidenceResult]) -> ClaimVerification:
     if not evidence:
         return ClaimVerification(claim=claim, label=VerificationLabel.INSUFFICIENT_EVIDENCE,
-            verifier_method="cosine_similarity_heuristic", explanation="No retrieved evidence was available.")
+            verifier_method="cosine_similarity_heuristic", retrieved_evidence=[],
+            explanation="No claim-specific evidence was retrieved.")
     best = max(evidence, key=lambda item: item.similarity)
     score = max(-1.0, min(1.0, best.similarity))
     # These cutoffs rank topical similarity only; they do not establish factual entailment.
@@ -49,34 +50,46 @@ def heuristic_verify(claim: str, evidence: list[EvidenceResult]) -> ClaimVerific
              VerificationLabel.PARTIALLY_SUPPORTED if score >= 0.48 else
              VerificationLabel.INSUFFICIENT_EVIDENCE)
     return ClaimVerification(claim=claim, label=label, evidence=citations_for([best]),
-        verifier_method="cosine_similarity_heuristic", raw_similarity=score,
+        retrieved_evidence=evidence, verifier_method="cosine_similarity_heuristic", raw_similarity=score,
         explanation="Similarity is a topical heuristic, not proof that the evidence entails this claim.")
 
 
 def llm_verify(claim: str, evidence: list[EvidenceResult], llm) -> ClaimVerification:
     if not evidence:
         return ClaimVerification(claim=claim, label=VerificationLabel.INSUFFICIENT_EVIDENCE,
-            verifier_method="evidence_conditioned_llm", explanation="No retrieved evidence was available.")
+            verifier_method="evidence_conditioned_llm", retrieved_evidence=[],
+            explanation="No claim-specific evidence was retrieved; the verifier was not asked to infer a label.")
     raw = llm.complete_json(
         "Assess only the supplied claim and evidence. Return JSON with label (SUPPORTED, "
         "PARTIALLY_SUPPORTED, UNSUPPORTED, CONTRADICTED, or INSUFFICIENT_EVIDENCE), "
-        "evidence_chunk_ids (array of supplied IDs), and explanation. Similarity is not proof. "
-        "Use INSUFFICIENT_EVIDENCE when evidence does not decide the claim.",
+        "evidence_chunk_ids (required array of supplied IDs) and a non-empty explanation. "
+        "The supplied passages were retrieved specifically for this claim. Similarity scores "
+        "only ranked candidates; they are not proof or probabilities. Use INSUFFICIENT_EVIDENCE "
+        "when the retrieved passages are irrelevant or do not let you decide. Do not infer a "
+        "contradiction from missing information.",
         json.dumps({"claim": claim, "evidence": [e.model_dump() for e in evidence]}, ensure_ascii=False),
     )
     try:
         label = VerificationLabel(raw["label"])
         explanation = raw["explanation"]
-        ids = raw.get("evidence_chunk_ids", [])
-        if not isinstance(explanation, str) or not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        ids = raw["evidence_chunk_ids"]
+        if (not isinstance(explanation, str) or not explanation.strip()
+                or not isinstance(ids, list) or not all(isinstance(i, str) for i in ids)):
             raise ValueError("invalid verifier fields")
         by_id = {item.chunk_id: item for item in evidence}
         if any(item_id not in by_id for item_id in ids):
             raise ValueError("verifier referenced evidence outside the retrieved set")
+        if label in {
+            VerificationLabel.SUPPORTED,
+            VerificationLabel.PARTIALLY_SUPPORTED,
+            VerificationLabel.UNSUPPORTED,
+            VerificationLabel.CONTRADICTED,
+        } and not ids:
+            raise ValueError("a determinate label must identify assessed evidence")
     except (KeyError, ValueError, TypeError) as exc:
         raise LLMError("The verifier returned invalid structured output.") from exc
     used = [by_id[item_id] for item_id in ids]
     return ClaimVerification(claim=claim, label=label, evidence=citations_for(used),
-        verifier_method="evidence_conditioned_llm", explanation=explanation,
+        retrieved_evidence=evidence, verifier_method="evidence_conditioned_llm", explanation=explanation,
         raw_similarity=max((item.similarity for item in used), default=None))
 

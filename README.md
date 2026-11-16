@@ -7,7 +7,7 @@ VeriRAG is a local-first research prototype for asking questions about PDFs and 
 - Extracts text and page numbers from PDFs, splits text into chunks, and embeds those chunks locally.
 - Stores vectors in a local FAISS index and retrieves relevant passages for a question.
 - Sends retrieved passages to a configurable OpenAI-compatible chat completions API when an API key is configured.
-- Extracts answer claims and assesses them with a cosine-similarity heuristic or an evidence-conditioned LLM verifier.
+- Extracts answer claims, searches FAISS separately for each claim, and assesses each claim with either a cosine-similarity heuristic or an evidence-conditioned LLM verifier.
 - Returns source filenames, page references, retrieved excerpts, labels, explanations, and latency.
 - Keeps original documents and index files under `data/storage/` on this computer.
 
@@ -21,12 +21,17 @@ React/Vite browser
 FastAPI backend
        ├── PyMuPDF → page-aware chunks
        ├── Sentence Transformers → normalized embeddings
-       ├── FAISS CPU → local similarity search
-       ├── OpenAI-compatible LLM → answer, claims, optional verifier
+       ├── FAISS CPU → question retrieval for the answer
+       ├── claim extraction → independent embedding and FAISS retrieval per claim
+       ├── OpenAI-compatible LLM → answer, claims, optional evidence verifier
        └── data/storage/ → PDFs, metadata, chunks, FAISS index
 ```
 
-The similarity verifier is deliberately described as a heuristic. Cosine similarity says that two pieces of text are semantically close; it does not determine whether one proves the other. The LLM verifier can return `CONTRADICTED` separately from `UNSUPPORTED`, and can abstain with `INSUFFICIENT_EVIDENCE`.
+Answer-level retrieval supplies context to the answer model and remains separate from claim-level retrieval. Once claims are extracted, each claim is embedded and sent to FAISS on its own. Each claim result returns `retrieved_evidence` with chunk ID, document ID, filename, page, text, and similarity; the existing `evidence` field identifies the passages the verifier selected. The answer-level `retrieved_evidence` and `citations` response fields remain available as before.
+
+The LLM verifier receives only a claim and that claim's retrieved passages. It must return a label, evidence chunk IDs, and a non-empty explanation. The API rejects malformed output and IDs outside that claim's retrieved set; provider or parsing errors remain API errors and are never converted into verification labels. `INSUFFICIENT_EVIDENCE` is used when retrieval returns no passages or the passages do not let the verifier decide. `UNSUPPORTED` is the verifier's assessment that retrieved evidence does not support the claim; `CONTRADICTED` requires evidence assessed as conflicting with it.
+
+The similarity verifier remains a comparison baseline. Its threshold labels indicate topical similarity only; they do not establish entailment and are not calibrated probabilities. Claim-specific retrieval can still miss relevant evidence, and the LLM can misclassify the evidence it receives.
 
 ## Prerequisites
 
@@ -103,7 +108,7 @@ Documents are deduplicated by SHA-256 of file bytes. If changing the embedding m
 - `POST /api/retrieval` — inspect top-k passages for a query without generating an answer.
 - `POST /api/ask` — generate an answer and claim assessments. Optional `top_k` and `verifier` fields are accepted.
 
-The answer response keeps the original answer, cited chunks, retrieved evidence, claim assessments, verifier method, and elapsed time distinct.
+The answer response keeps the original answer, answer citations and retrieved passages, claim assessments, verifier method, and elapsed time distinct. Each claim includes its own `retrieved_evidence` candidate list and the verifier-selected `evidence` citations. The UI shows both, including similarity for retrieval ranking, source metadata, and the method used for that claim.
 
 ## Tests
 
@@ -113,14 +118,14 @@ From the repository root, run:
 python -m pytest backend/tests -q
 ```
 
-Tests use generated tiny PDFs and fake embedding/LLM interfaces; they do not make paid API calls or need credentials. The first dependency install may still download ML libraries, but tests do not download a sentence embedding model.
+Tests use generated tiny PDFs and fake embedding/LLM interfaces. They cover separate evidence retrieval for multiple claims, relevant and irrelevant passages, contradiction, missing evidence, malformed verifier output, out-of-set IDs, and API error propagation without making paid calls. The first dependency install may still download ML libraries, but tests do not download a sentence embedding model.
 
 ## Evaluation
 
 1. Create the sample PDF from its readable source: `python backend/scripts/make_sample_pdf.py`.
 2. Start VeriRAG and upload `data/sample_documents/sample_policy.pdf` in the browser.
 3. From the repository root, run `python backend/scripts/run_evaluation.py --verifier heuristic`.
-4. The script writes raw per-question JSONL to `data/evaluation/results.jsonl`. Run again with `--verifier llm` to compare methods on the same questions and corpus; LLM mode requires credentials.
+4. The script writes raw per-question JSONL to `data/evaluation/results.jsonl` and aggregate metrics to `data/evaluation/results_summary.json`. Run again with `--verifier llm` to compare methods on the same questions and corpus; LLM mode requires credentials.
 
 The starter questions cover answerable, partially answerable, unanswerable, and conflicting evidence. They contain reference answers and text passages but no fabricated claim labels or retrieval chunk IDs. Human annotation should be added before reporting supervised scores.
 
@@ -144,7 +149,8 @@ See [`docs/LEARNING_GUIDE.md`](docs/LEARNING_GUIDE.md) for beginner-friendly exp
 - Scanned PDFs have no extractable text; OCR is not included.
 - A local FAISS index and metadata files are appropriate for this prototype, not concurrent multi-user use or a production database.
 - Prompt injection defenses instruct the model to treat excerpts as untrusted data, but prompt instructions alone cannot guarantee safe behavior.
-- Similarity thresholds are not calibrated truth probabilities. LLM verification can be wrong or return invalid output.
+- Similarity thresholds are not calibrated truth probabilities and do not establish factual entailment. LLM verification can be wrong or return invalid output; invalid output and provider failures surface as errors.
+- Claim-level top-k retrieval can miss relevant passages. `UNSUPPORTED` and `INSUFFICIENT_EVIDENCE` depend on the available documents, retrieval quality, and verifier judgment; neither is a universal truth label.
 - There is no claim that this implementation is novel or that verification improves reliability. Establish annotations and run controlled comparisons before making research claims.
 - Next research step: refine the question “Does claim-level evidence verification improve the reliability of RAG-generated answers compared with a conventional RAG baseline?” and define the annotation policy before evaluating it.
 

@@ -3,3 +3,8 @@
 @media(max-width:850px){.shell{padding:0 22px}.workspace{grid-template-columns:245px minmax(0,1fr);gap:12px}.steps{gap:10px}.hero{padding-top:42px}}
 @media(max-width:650px){.shell{padding:0 15px}.topbar{height:62px}.hero{padding:34px 0 25px}.hero h1{letter-spacing:-1.8px}.workspace{grid-template-columns:1fr}.sidebar{min-height:auto;padding:17px}.sidebar .privacy-note{margin-top:14px}.doc-list{grid-template-columns:1fr 1fr}.doc-info strong{max-width:130px}.ask-card,.answer-card,.claims-panel{padding:17px}.steps{display:grid;grid-template-columns:1fr;gap:8px}.empty-state{padding:34px 20px}footer{gap:10px;flex-direction:column}.ask-controls{align-items:flex-end}.select-label{display:block}.select-label select{display:block;margin-top:5px}.method-tag{max-width:125px}}
 
+.claim-verifier{display:block;margin-top:5px;color:#71817b;font:10px 'DM Mono',monospace}
+.claim-evidence-list{margin-top:10px}
+.claim-evidence-list h3{margin:0 0 5px;color:#71817b;font:500 10px 'DM Mono',monospace;text-transform:uppercase;letter-spacing:.07em}
+.source-meta{color:#89958f;font:9px 'DM Mono',monospace}
+

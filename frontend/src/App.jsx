@@ -107,11 +107,25 @@ function App() {
 
           <section className="panel claims-panel">
             <div className="section-heading"><div><p className="eyebrow">Evidence assessment</p><h2>Claim by claim</h2></div><span className="method-tag">{result.verifier_method.replaceAll('_', ' ')}</span></div>
-            {result.claims.length ? <div className="claim-list">{result.claims.map((claim, index) => <article className="claim" key={`${index}-${claim.claim}`}>
-              <div className="claim-title"><span className={`status status-${claim.label.toLowerCase()}`}>{claim.label.replaceAll('_', ' ')}</span>{claim.raw_similarity != null && <span className="score">similarity {claim.raw_similarity.toFixed(2)}</span>}</div>
-              <p>{claim.claim}</p><small className="explanation">{claim.explanation}</small>
-              {claim.evidence.map(c => <details className="evidence" key={c.chunk_id}><summary>{c.filename} · page {c.page_number}</summary><blockquote>{c.text}</blockquote></details>)}
-            </article>)}</div> : <p className="empty">No factual claims were extracted.</p>}
+            <p className="microcopy">Each claim has its own evidence search. Similarity scores rank passages; they do not prove support.</p>
+            {result.claims.length ? <div className="claim-list">{result.claims.map((claim, index) => {
+              const assessedIds = new Set((claim.evidence || []).map(item => item.chunk_id));
+              const candidates = claim.retrieved_evidence || claim.evidence || [];
+              return <article className="claim" key={`${index}-${claim.claim}`}>
+                <div className="claim-title"><span className={`status status-${claim.label.toLowerCase()}`}>{claim.label.replaceAll('_', ' ')}</span>{claim.raw_similarity != null && <span className="score">similarity {claim.raw_similarity.toFixed(2)}</span>}</div>
+                <p>{claim.claim}</p>
+                <small className="explanation">{claim.explanation}</small>
+                <small className="claim-verifier">Method: {(claim.verifier_method || result.verifier_method).replaceAll('_', ' ')}</small>
+                <div className="claim-evidence-list">
+                  <h3>Claim-specific retrieved evidence</h3>
+                  {candidates.length ? candidates.map(item => <details className="evidence" key={item.chunk_id}>
+                    <summary>{item.filename} · page {item.page_number}{item.similarity != null ? ` · similarity ${item.similarity.toFixed(3)}` : ''}{assessedIds.has(item.chunk_id) ? ' · assessed' : ''}</summary>
+                    <small className="source-meta">Chunk {item.chunk_id} · document {item.document_id}</small>
+                    <blockquote>{item.text}</blockquote>
+                  </details>) : <p className="empty">No passages were retrieved for this claim.</p>}
+                </div>
+              </article>;
+            })}</div> : <p className="empty">No factual claims were extracted.</p>}
             <p className="disclaimer">Similarity is a topical signal, not proof of factual support. Verification results depend on the documents and verifier quality.</p>
           </section>
 

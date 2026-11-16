@@ -9,6 +9,7 @@ from backend.app.evaluation import (answer_token_f1, citation_support_rate, clas
                                     summarize_records)
 from backend.app.main import create_app
 from backend.app.schemas import ChunkRecord, EvidenceResult, VerificationLabel
+from backend.app.services.claim_retrieval import ClaimEvidenceRetrievalService
 from backend.app.services.chunking import chunk_pages
 from backend.app.services.documents import extract_pdf_pages
 from backend.app.services.llm import LLMError, LLMNotConfigured, OpenAICompatibleProvider
@@ -138,6 +139,128 @@ def test_malformed_llm_outputs_and_missing_key():
           text="evidence", similarity=.9)], FakeLLM([{"label": "INVALID", "explanation": "no", "evidence_chunk_ids": []}]))
     with pytest.raises(LLMNotConfigured):
         OpenAICompatibleProvider(None, "http://localhost/v1", "model").complete_json("system", "user")
+
+
+def test_claim_retrieval_embeds_each_claim_and_preserves_source_metadata():
+    alpha = EvidenceResult(chunk_id="alpha-p2-c1", document_id="alpha", filename="alpha.pdf",
+                           page_number=2, text="Alpha fact.", similarity=.87)
+    beta = EvidenceResult(chunk_id="beta-p5-c1", document_id="beta", filename="beta.pdf",
+                          page_number=5, text="Beta fact.", similarity=.79)
+
+    class RoutingEmbedder:
+        def __init__(self): self.queries = []
+        def encode(self, texts):
+            self.queries.extend(texts)
+            return np.array([[1, 0] if "alpha" in texts[0].lower() else [0, 1]], dtype="float32")
+
+    class RoutingStore:
+        def search(self, vector, top_k):
+            assert top_k == 4
+            return [alpha] if vector[0] else [beta]
+
+    embedder = RoutingEmbedder()
+    service = ClaimEvidenceRetrievalService(embedder, RoutingStore(), default_top_k=4)
+    alpha_result = service.retrieve("Claim about alpha")
+    beta_result = service.retrieve("Claim about beta")
+    assert embedder.queries == ["Claim about alpha", "Claim about beta"]
+    assert alpha_result[0].chunk_id == "alpha-p2-c1" and alpha_result[0].similarity == .87
+    assert beta_result[0].filename == "beta.pdf" and beta_result[0].page_number == 5
+
+
+def test_llm_verifier_handles_contradictory_and_irrelevant_evidence():
+    contradiction = EvidenceResult(chunk_id="c1", document_id="d", filename="policy.pdf", page_number=3,
+                                  text="The policy says records expire after 30 days.", similarity=.84)
+    contradicted = llm_verify("Records are kept forever.", [contradiction], FakeLLM([{
+        "label": "CONTRADICTED", "evidence_chunk_ids": ["c1"],
+        "explanation": "The passage states a 30-day expiration.",
+    }]))
+    assert contradicted.label == VerificationLabel.CONTRADICTED
+    assert contradicted.evidence[0].chunk_id == "c1"
+    assert contradicted.retrieved_evidence[0].similarity == .84
+
+    irrelevant = EvidenceResult(chunk_id="c2", document_id="x", filename="unrelated.pdf", page_number=1,
+                                text="A sentence about gardening.", similarity=.21)
+    abstained = llm_verify("The capital is Paris.", [irrelevant], FakeLLM([{
+        "label": "INSUFFICIENT_EVIDENCE", "evidence_chunk_ids": [],
+        "explanation": "The retrieved passage does not address the claim.",
+    }]))
+    assert abstained.label == VerificationLabel.INSUFFICIENT_EVIDENCE
+    assert abstained.retrieved_evidence == [irrelevant]
+    assert abstained.evidence == []
+
+
+def test_claim_verifier_missing_evidence_does_not_call_llm():
+    result = llm_verify("A factual claim.", [], FakeLLM([]))
+    assert result.label == VerificationLabel.INSUFFICIENT_EVIDENCE
+    assert result.retrieved_evidence == []
+    assert result.evidence == []
+
+
+@pytest.mark.parametrize("response", [
+    {"label": "SUPPORTED", "explanation": "missing ids"},
+    {"label": "SUPPORTED", "evidence_chunk_ids": ["c1"], "explanation": "  "},
+    {"label": "SUPPORTED", "evidence_chunk_ids": [], "explanation": "no evidence cited"},
+    {"label": "PARTIALLY_SUPPORTED", "evidence_chunk_ids": ["not-retrieved"], "explanation": "bad id"},
+    {"label": "UNKNOWN", "evidence_chunk_ids": ["c1"], "explanation": "bad label"},
+])
+def test_claim_verifier_rejects_malformed_output_and_invalid_evidence_ids(response):
+    evidence = EvidenceResult(chunk_id="c1", document_id="d", filename="doc.pdf", page_number=1,
+                              text="Evidence.", similarity=.7)
+    with pytest.raises(LLMError):
+        llm_verify("Claim.", [evidence], FakeLLM([response]))
+
+
+def test_multiple_claims_get_different_retrieval_and_verification_evidence():
+    answer_evidence = EvidenceResult(chunk_id="answer", document_id="answer-doc", filename="answer.pdf",
+                                     page_number=1, text="Answer context.", similarity=.65)
+    cats = EvidenceResult(chunk_id="cats-p4-c1", document_id="cats", filename="cats.pdf",
+                          page_number=4, text="Cats are mammals.", similarity=.88)
+    oceans = EvidenceResult(chunk_id="oceans-p8-c1", document_id="oceans", filename="oceans.pdf",
+                            page_number=8, text="The Pacific is an ocean.", similarity=.81)
+
+    class ClaimEmbedder:
+        def encode(self, texts):
+            text = texts[0].lower()
+            if "cats" in text: vector = [1, 0, 0]
+            elif "pacific" in text: vector = [0, 1, 0]
+            else: vector = [0, 0, 1]
+            return np.array([vector], dtype="float32")
+
+    class ClaimStore:
+        def search(self, vector, top_k):
+            if vector[0]: return [cats]
+            if vector[1]: return [oceans]
+            return [answer_evidence]
+
+    llm = FakeLLM([
+        {"answer": "Cats are mammals. The Pacific is an ocean.", "source_chunk_ids": ["answer"]},
+        {"claims": ["Cats are mammals.", "The Pacific is an ocean."]},
+        {"label": "SUPPORTED", "evidence_chunk_ids": ["cats-p4-c1"], "explanation": "The cats passage states this."},
+        {"label": "SUPPORTED", "evidence_chunk_ids": ["oceans-p8-c1"], "explanation": "The oceans passage states this."},
+    ])
+    result = RAGService(ClaimEmbedder(), ClaimStore(), llm, 3, "llm").ask("Give me two facts", verifier="llm")
+    assert [item.chunk_id for item in result.retrieved_evidence] == ["answer"]
+    assert [item.retrieved_evidence[0].chunk_id for item in result.claims] == ["cats-p4-c1", "oceans-p8-c1"]
+    assert [item.evidence[0].chunk_id for item in result.claims] == ["cats-p4-c1", "oceans-p8-c1"]
+    assert result.claims[0].retrieved_evidence[0].filename == "cats.pdf"
+    assert result.claims[1].retrieved_evidence[0].page_number == 8
+
+
+def test_llm_verification_api_error_is_returned_not_labeled(tmp_path):
+    evidence = EvidenceResult(chunk_id="c1", document_id="d", filename="doc.pdf", page_number=1,
+                              text="A relevant passage.", similarity=.9)
+    class Store:
+        def search(self, vector, top_k): return [evidence]
+
+    llm = FakeLLM([
+        {"answer": "A claim.", "source_chunk_ids": ["c1"]},
+        {"claims": ["A claim."]},
+        LLMError("provider unavailable"),
+    ])
+    app = create_app(settings(tmp_path), embedder=FakeEmbedder(), llm=llm, store=Store())
+    response = TestClient(app).post("/api/ask", json={"question": "Question", "verifier": "llm"})
+    assert response.status_code == 502
+    assert "claims" not in response.json()
 
 
 def test_evaluation_metrics():

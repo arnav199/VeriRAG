@@ -2,6 +2,7 @@ import json
 from time import perf_counter
 
 from backend.app.schemas import AskResponse, Citation, EvidenceResult
+from backend.app.services.claim_retrieval import ClaimEvidenceRetrievalService
 from backend.app.services.llm import LLMError
 from backend.app.services.verification import citations_for, extract_claims, heuristic_verify, llm_verify
 
@@ -13,6 +14,7 @@ class RAGService:
     def __init__(self, embedder, store, llm, default_top_k: int, default_verifier: str):
         self.embedder, self.store, self.llm = embedder, store, llm
         self.default_top_k, self.default_verifier = default_top_k, default_verifier
+        self.claim_retriever = ClaimEvidenceRetrievalService(embedder, store, default_top_k)
 
     def retrieve(self, query: str, top_k: int | None = None) -> list[EvidenceResult]:
         vector = self.embedder.encode([query])[0]
@@ -40,14 +42,18 @@ class RAGService:
         claims = extract_claims(answer, self.llm)
         method = verifier or self.default_verifier
         verify = heuristic_verify if method == "heuristic" else None
-        results = [verify(claim, evidence) if verify else llm_verify(claim, evidence, self.llm)
-                   for claim in claims]
+        results = []
+        for claim in claims:
+            claim_evidence = self.claim_retriever.retrieve(claim, top_k)
+            results.append(verify(claim, claim_evidence) if verify
+                           else llm_verify(claim, claim_evidence, self.llm))
         return AskResponse(
             question=question, answer=answer, citations=citations, retrieved_evidence=evidence,
             claims=results, verifier_method=("cosine_similarity_heuristic" if method == "heuristic"
                                             else "evidence_conditioned_llm"),
             latency_ms=round((perf_counter() - started) * 1000, 2),
             limitations=["Claim labels are assessments of retrieved evidence, not proof of truth.",
+                         "Each claim is independently searched, but retrieval can still miss relevant passages.",
                          "Results depend on document coverage, retrieval quality, and verifier quality."],
         )
 

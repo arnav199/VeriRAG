@@ -43,6 +43,8 @@ class ClaimVerification(BaseModel):
     claim: str
     label: VerificationLabel
     evidence: list[Citation] = Field(default_factory=list)
+    # Candidate passages retrieved for this claim, separate from answer-level retrieval.
+    retrieved_evidence: list[EvidenceResult] = Field(default_factory=list)
     verifier_method: str
     explanation: str
     raw_similarity: float | None = None
