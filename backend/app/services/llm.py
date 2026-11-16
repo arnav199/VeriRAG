@@ -41,7 +41,17 @@ class OpenAICompatibleProvider:
             if not isinstance(result, dict):
                 raise ValueError("Expected a JSON object")
             return result
-        except (HTTPError, URLError, TimeoutError) as exc:
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise LLMError(
+                    "The LLM provider rejected the configured API key. Check LLM_API_KEY and "
+                    "confirm it is valid for the selected provider."
+                ) from exc
+            raise LLMError(
+                f"The configured LLM service returned HTTP {exc.code}. "
+                "Check the provider URL, model, and account configuration."
+            ) from exc
+        except (URLError, TimeoutError) as exc:
             raise LLMError("The configured LLM service could not complete the request.") from exc
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise LLMError("The LLM returned malformed structured output.") from exc

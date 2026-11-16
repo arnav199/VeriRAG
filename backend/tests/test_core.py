@@ -95,6 +95,23 @@ def test_document_duplicate_and_persistent_metadata(tmp_path, monkeypatch):
     assert (tmp_path / "documents.json").exists() and store.find_by_hash(first.sha256)
 
 
+def test_faiss_index_persists_and_reloads_searchable_vectors(tmp_path):
+    pytest.importorskip("faiss")
+    from backend.app.schemas import DocumentRecord
+    record = DocumentRecord(document_id="persisted", filename="persisted.pdf", sha256="abc",
+                            page_count=1, chunk_count=1, uploaded_at="2026-01-01T00:00:00+00:00")
+    chunk = ChunkRecord(chunk_id="persisted-p1-c1", document_id="persisted",
+                         filename="persisted.pdf", page_number=1, text="persistent evidence")
+    store = LocalVectorStore(tmp_path)
+    store.add_document(record, [chunk], np.array([[1.0, 0.0]], dtype="float32"))
+
+    reloaded = LocalVectorStore(tmp_path)
+    results = reloaded.search(np.array([1.0, 0.0]), 1)
+    assert len(results) == 1
+    assert results[0].chunk_id == "persisted-p1-c1"
+    assert results[0].similarity == pytest.approx(1.0)
+
+
 def test_embedding_and_retrieval_interfaces():
     class Store:
         def search(self, vector, top_k):
@@ -139,6 +156,19 @@ def test_malformed_llm_outputs_and_missing_key():
           text="evidence", similarity=.9)], FakeLLM([{"label": "INVALID", "explanation": "no", "evidence_chunk_ids": []}]))
     with pytest.raises(LLMNotConfigured):
         OpenAICompatibleProvider(None, "http://localhost/v1", "model").complete_json("system", "user")
+
+
+def test_invalid_provider_key_has_useful_error_without_exposing_key(monkeypatch):
+    from urllib.error import HTTPError
+    import backend.app.services.llm as llm_module
+
+    secret = "must-not-be-printed"
+    def unauthorized(*args, **kwargs):
+        raise HTTPError("https://provider.invalid", 401, "Unauthorized", {}, None)
+    monkeypatch.setattr(llm_module, "urlopen", unauthorized)
+    with pytest.raises(LLMError, match="rejected the configured API key") as raised:
+        OpenAICompatibleProvider(secret, "https://provider.invalid/v1", "model").complete_json("s", "u")
+    assert secret not in str(raised.value)
 
 
 def test_claim_retrieval_embeds_each_claim_and_preserves_source_metadata():
@@ -187,6 +217,17 @@ def test_llm_verifier_handles_contradictory_and_irrelevant_evidence():
     assert abstained.label == VerificationLabel.INSUFFICIENT_EVIDENCE
     assert abstained.retrieved_evidence == [irrelevant]
     assert abstained.evidence == []
+
+
+@pytest.mark.parametrize("label", ["PARTIALLY_SUPPORTED", "UNSUPPORTED"])
+def test_llm_verifier_accepts_partial_and_unsupported_labels(label):
+    evidence = EvidenceResult(chunk_id="c1", document_id="d", filename="policy.pdf", page_number=2,
+                              text="The policy mentions some but not all requested conditions.", similarity=.74)
+    result = llm_verify("A multi-part claim.", [evidence], FakeLLM([{
+        "label": label, "evidence_chunk_ids": ["c1"], "explanation": "Assessment based on the supplied passage.",
+    }]))
+    assert result.label.value == label
+    assert result.evidence[0].chunk_id == "c1"
 
 
 def test_claim_verifier_missing_evidence_does_not_call_llm():
@@ -292,4 +333,87 @@ def test_api_validation_and_upload_errors(tmp_path):
     assert client.post("/api/documents", files={"file": ("large.pdf", b"%PDF-" + b"x" * (1024 * 1024))}).status_code == 413
     ask = client.post("/api/ask", json={"question": "A valid question"})
     assert ask.status_code == 503 and "LLM_API_KEY" in ask.json()["detail"]
+
+
+def test_pdf_upload_api_extracts_pages_indexes_and_deduplicates(tmp_path):
+    app = create_app(settings(tmp_path), embedder=FakeEmbedder(),
+                     llm=OpenAICompatibleProvider(None, "http://localhost/v1", "unused"),
+                     store=LocalVectorStore(tmp_path))
+    client = TestClient(app)
+    pdf = make_pdf("An uploaded PDF contains page-aware evidence for this test.")
+    first = client.post("/api/documents", files={"file": ("evidence.pdf", pdf, "application/pdf")})
+    assert first.status_code == 201
+    result = first.json()
+    assert result["duplicate"] is False
+    assert result["document"]["page_count"] == 1
+    assert result["document"]["chunk_count"] >= 1
+    assert client.get("/api/documents").json()[0]["filename"] == "evidence.pdf"
+
+    repeated = client.post("/api/documents", files={"file": ("renamed.pdf", pdf, "application/pdf")})
+    assert repeated.status_code == 201
+    assert repeated.json()["duplicate"] is True
+    assert repeated.json()["document"]["document_id"] == result["document"]["document_id"]
+
+
+def test_deterministic_demo_covers_supported_partial_missing_and_conflict(tmp_path):
+    from backend.app.services.demo import DeterministicDemoProvider
+    policy = EvidenceResult(
+        chunk_id="policy-p1-c1", document_id="policy", filename="sample_policy.pdf",
+        page_number=1,
+        text=("Uploaded research documents are stored locally and kept until the researcher deletes them. "
+              "The sample policy does not state whether local files are encrypted at rest. "
+              "A later draft note says records are removed after thirty days. "
+              "The note does not explain whether it replaces the retention section."), similarity=.9)
+
+    class Store:
+        def search(self, vector, top_k): return [policy]
+
+    service = RAGService(FakeEmbedder(), Store(), FakeLLM([]), 3, "heuristic")
+    supported = service.ask("What does the retention section say?", mode="demo")
+    assert supported.generation_mode == "deterministic_demo"
+    assert supported.claims[0].label == VerificationLabel.SUPPORTED
+    assert supported.claims[0].verifier_method == "deterministic_demo_fixture"
+
+    partial = service.ask("How long are files kept and are they encrypted at rest?", mode="demo")
+    assert [claim.label for claim in partial.claims] == [
+        VerificationLabel.SUPPORTED, VerificationLabel.INSUFFICIENT_EVIDENCE]
+
+    missing = service.ask("Which cloud region stores these documents?", mode="demo")
+    assert missing.claims[0].label == VerificationLabel.INSUFFICIENT_EVIDENCE
+    assert missing.claims[0].evidence == []
+
+    conflict = service.ask("What does the conflicting retention note say?", mode="demo")
+    assert len(conflict.claims) == 3
+    assert all(claim.label == VerificationLabel.SUPPORTED for claim in conflict.claims)
+    assert "thirty days" in conflict.answer
+    assert "DEMO MODE" in " ".join(conflict.limitations)
+
+    app = create_app(settings(tmp_path), embedder=FakeEmbedder(), llm=FakeLLM([]), store=Store())
+    response = TestClient(app).post("/api/ask", json={
+        "question": "What does the retention section say?", "mode": "demo",
+    })
+    assert response.status_code == 200
+    assert response.json()["generation_mode"] == "deterministic_demo"
+
+
+def test_baseline_skips_claim_extraction_and_verification():
+    evidence = EvidenceResult(chunk_id="c1", document_id="d", filename="doc.pdf", page_number=1,
+                              text="A sample evidence passage.", similarity=.8)
+    class Store:
+        def search(self, vector, top_k): return [evidence]
+    result = RAGService(FakeEmbedder(), Store(), FakeLLM([
+        {"answer": "An answer based on evidence.", "source_chunk_ids": ["c1"]},
+    ]), 2, "heuristic").ask("Question?", pipeline="baseline")
+    assert result.pipeline == "baseline"
+    assert result.claims == []
+    assert result.verifier_method == "conventional_rag_baseline"
+
+
+def test_demo_does_not_generate_fixture_facts_without_the_sample_policy():
+    class EmptyStore:
+        def search(self, vector, top_k): return []
+    result = RAGService(FakeEmbedder(), EmptyStore(), FakeLLM([]), 3, "heuristic").ask(
+        "What does the retention section say?", mode="demo")
+    assert "not present in the retrieved passages" in result.answer
+    assert result.citations == [] and result.claims == []
 

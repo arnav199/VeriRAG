@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--output", default="data/evaluation/results.jsonl")
     parser.add_argument("--api", default="http://127.0.0.1:8000/api/ask")
     parser.add_argument("--verifier", choices=["heuristic", "llm"], default="heuristic")
+    parser.add_argument("--pipeline", choices=["baseline", "verirag"], default="verirag")
     args = parser.parse_args()
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,10 +27,12 @@ def main():
             row = {"question_id": item["question_id"], "question": item["question"],
                    "reference_answer": item.get("reference_answer"),
                    "reference_evidence": item.get("reference_evidence", []),
-                   "expected_claim_labels": item.get("expected_claim_labels")}
+                   "expected_claim_labels": item.get("expected_claim_labels"),
+                   "pipeline_requested": args.pipeline}
             try:
                 request = Request(args.api, data=json.dumps({"question": item["question"],
-                    "verifier": args.verifier}).encode(), headers={"Content-Type": "application/json"})
+                    "verifier": args.verifier, "pipeline": args.pipeline}).encode(),
+                    headers={"Content-Type": "application/json"})
                 with urlopen(request, timeout=180) as response:
                     row.update(json.loads(response.read()))
             except (HTTPError, URLError, TimeoutError, ValueError) as exc:

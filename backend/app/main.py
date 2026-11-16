@@ -66,7 +66,8 @@ def create_app(settings: Settings | None = None, embedder=None, llm=None, store=
     @app.post("/api/ask")
     def ask(request: AskRequest):
         try:
-            return rag.ask(request.question, request.top_k, request.verifier)
+            return rag.ask(request.question, request.top_k, request.verifier, request.mode,
+                           request.pipeline)
         except LLMNotConfigured as exc:
             raise HTTPException(503, str(exc)) from exc
         except LLMError as exc:

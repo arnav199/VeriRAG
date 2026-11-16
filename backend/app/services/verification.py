@@ -90,6 +90,7 @@ def llm_verify(claim: str, evidence: list[EvidenceResult], llm) -> ClaimVerifica
         raise LLMError("The verifier returned invalid structured output.") from exc
     used = [by_id[item_id] for item_id in ids]
     return ClaimVerification(claim=claim, label=label, evidence=citations_for(used),
-        retrieved_evidence=evidence, verifier_method="evidence_conditioned_llm", explanation=explanation,
+        retrieved_evidence=evidence,
+        verifier_method=getattr(llm, "verifier_method", "evidence_conditioned_llm"), explanation=explanation,
         raw_similarity=max((item.similarity for item in used), default=None))
 

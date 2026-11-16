@@ -54,6 +54,8 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     top_k: int | None = Field(default=None, ge=1, le=20)
     verifier: str | None = Field(default=None, pattern="^(heuristic|llm)$")
+    mode: str = Field(default="live", pattern="^(live|demo)$")
+    pipeline: str = Field(default="verirag", pattern="^(baseline|verirag)$")
 
 
 class AskResponse(BaseModel):
@@ -63,6 +65,8 @@ class AskResponse(BaseModel):
     retrieved_evidence: list[EvidenceResult]
     claims: list[ClaimVerification]
     verifier_method: str
+    generation_mode: str = "live_llm"
+    pipeline: str = "verirag"
     latency_ms: float
     limitations: list[str]
 

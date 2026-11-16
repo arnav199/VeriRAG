@@ -1,5 +1,7 @@
 # VeriRAG
 
+> A deterministic demonstration mode and a conventional RAG baseline are available in the current prototype. Demo output is scripted and explicitly labelled; it is not LLM output.
+
 VeriRAG is a local-first research prototype for asking questions about PDFs and inspecting the evidence behind generated answers. It combines a conventional retrieval-augmented generation (RAG) pipeline with claim-level evidence assessments. It is an experiment in reliability; it does not eliminate hallucinations or guarantee that an answer is true.
 
 ## What it does
@@ -67,20 +69,24 @@ The first use of Sentence Transformers downloads `sentence-transformers/all-Mini
 
 ## Run locally
 
-Start the API from the repository root:
+After installation, the one-command Windows launcher starts both servers in separate terminals, checks readiness, and opens the application:
 
 ```powershell
-python -m uvicorn backend.app.main:app --reload
+.\start_verirag.ps1
 ```
 
-Start the frontend in a second terminal:
+Keep both server terminals open while using the app. Close them with `Ctrl+C` when finished. If a port is already occupied, the launcher reports the process and leaves it running. To start the services manually, use separate terminals:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+```
 
 ```powershell
 cd frontend
-npm run dev
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
-Open the local Vite URL shown in the terminal. The API is at `http://127.0.0.1:8000`; interactive API docs are at `/docs`. On first run, add one or more PDFs. Without `LLM_API_KEY`, uploads and retrieval remain available, while the ask endpoint returns a clear setup message.
+Open `http://localhost:5173`. The API is at `http://localhost:8000`; interactive API docs are at `/docs`. Without `LLM_API_KEY`, the app selects its clearly labelled deterministic demo mode. The theme and chat history are saved in this browser.
 
 ### Configuration
 
@@ -102,6 +108,8 @@ Documents are deduplicated by SHA-256 of file bytes. If changing the embedding m
 
 ## API
 
+`POST /api/ask` accepts `question`, optional `top_k`, `verifier` (`heuristic` or `llm`), `mode` (`live` or `demo`), and `pipeline` (`baseline` or `verirag`). Live mode is the default and reports a clear setup error when `LLM_API_KEY` is missing. Demo mode is deterministic and scripted for the bundled policy; the response includes `generation_mode: "deterministic_demo"` and a limitation that identifies demo output. Baseline mode returns answer-level retrieval and citations with an empty `claims` list. VeriRAG mode adds claim-specific candidate evidence and verifier-selected citations.
+
 - `GET /api/health` — backend status and whether an LLM key is configured.
 - `GET /api/documents` — indexed document metadata.
 - `POST /api/documents` — multipart PDF upload.
@@ -122,10 +130,12 @@ Tests use generated tiny PDFs and fake embedding/LLM interfaces. They cover sepa
 
 ## Evaluation
 
+For a same-question comparison, run the evaluation script with `--pipeline baseline` and then `--pipeline verirag`. The baseline retrieves question-level context and generates an answer without claim extraction or verification; VeriRAG adds independent claim retrieval and assessment. Run either pipeline with `--verifier heuristic` or `--verifier llm` (the latter requires a configured key).
+
 1. Create the sample PDF from its readable source: `python backend/scripts/make_sample_pdf.py`.
 2. Start VeriRAG and upload `data/sample_documents/sample_policy.pdf` in the browser.
-3. From the repository root, run `python backend/scripts/run_evaluation.py --verifier heuristic`.
-4. The script writes raw per-question JSONL to `data/evaluation/results.jsonl` and aggregate metrics to `data/evaluation/results_summary.json`. Run again with `--verifier llm` to compare methods on the same questions and corpus; LLM mode requires credentials.
+3. From the repository root, run `python backend/scripts/run_evaluation.py --pipeline baseline --verifier heuristic --output data/evaluation/baseline.jsonl`, then rerun with `--pipeline verirag --output data/evaluation/verirag.jsonl` so both outputs are retained.
+4. The script writes raw per-question JSONL to `data/evaluation/results.jsonl` and aggregate metrics to `data/evaluation/results_summary.json`. Run with `--verifier llm` to use the evidence-conditioned LLM verifier; live LLM mode requires credentials.
 
 The starter questions cover answerable, partially answerable, unanswerable, and conflicting evidence. They contain reference answers and text passages but no fabricated claim labels or retrieval chunk IDs. Human annotation should be added before reporting supervised scores.
 
@@ -141,6 +151,17 @@ The starter questions cover answerable, partially answerable, unanswerable, and 
 Retrieval and citation metrics are omitted (`null`) until relevant chunk IDs are annotated. The JSONL rows preserve errors and raw outputs for pandas analysis. Compare baseline RAG and claim verification on the same questions; do not infer general performance from this small sample.
 
 ## Learning guide
+
+### Offline demonstration
+
+The interface offers **Deterministic demo** for the bundled sample policy, and selects it automatically when `/api/health` reports that no LLM key is configured. No provider is called in demo mode. The response is marked `DETERMINISTIC DEMO · NOT LLM OUTPUT`. Try these questions:
+
+- “What does the retention section say?” — directly supported.
+- “How long are files kept and are they encrypted at rest?” — one supported claim and one claim with insufficient evidence.
+- “Which cloud region stores these documents?” — missing information.
+- “What does the conflicting retention note say?” — presents the retention section, the later draft, and the unresolved replacement status.
+
+The bundled fixture is `data/sample_documents/sample_policy.pdf`; upload it from the document panel before asking. The Greenfield Community Library file was not present in this checkout.
 
 See [`docs/LEARNING_GUIDE.md`](docs/LEARNING_GUIDE.md) for beginner-friendly explanations of embeddings, cosine similarity, chunking, RAG, faithfulness, claim extraction, verification, and evaluation.
 

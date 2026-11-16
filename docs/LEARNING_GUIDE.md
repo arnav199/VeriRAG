@@ -68,3 +68,11 @@ From the repository root, start the API with `python -m uvicorn backend.app.main
 
 Run `python -m pytest backend/tests -q` from the root to exercise the retrieval and verification behavior with fake models. Run `npm run build` from `frontend` to check the interface. These checks do not establish that the methods are accurate; that requires annotated evidence and a controlled evaluation.
 
+## 9. Compare the conventional RAG baseline
+
+The API and interface expose two pipeline choices. **Conventional RAG baseline** retrieves passages for the question and generates a cited answer, then stops. **VeriRAG** continues by extracting claims, searching the vector index separately for each claim, and assessing those results. The baseline does not include claim labels, so it is useful for comparing answer quality and latency, while claim verification metrics require human-labelled claims. The evaluation script can run both against the same JSONL question set with `--pipeline baseline` and `--pipeline verirag`. Use separate output filenames (for example `baseline.jsonl` and `verirag.jsonl`) so the second run does not overwrite the first.
+
+## 10. Deterministic demonstration mode
+
+Choose **Deterministic demo** in the interface to rehearse without an API key or network call. It uses scripted responses for the bundled sample policy, but it still goes through the application's retrieval, claim-specific search, evidence selection, and source display. The interface labels these responses as demo output. This fixture is for demonstrating the workflow only; it is not an LLM response, a general-purpose answerer, or an evaluation result. Choose **Live LLM** to use the configured provider.
+

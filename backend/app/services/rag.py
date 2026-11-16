@@ -3,6 +3,7 @@ from time import perf_counter
 
 from backend.app.schemas import AskResponse, Citation, EvidenceResult
 from backend.app.services.claim_retrieval import ClaimEvidenceRetrievalService
+from backend.app.services.demo import DeterministicDemoProvider
 from backend.app.services.llm import LLMError
 from backend.app.services.verification import citations_for, extract_claims, heuristic_verify, llm_verify
 
@@ -20,10 +21,16 @@ class RAGService:
         vector = self.embedder.encode([query])[0]
         return self.store.search(vector, top_k or self.default_top_k)
 
-    def ask(self, question: str, top_k: int | None = None, verifier: str | None = None) -> AskResponse:
+    def ask(self, question: str, top_k: int | None = None, verifier: str | None = None,
+            mode: str = "live", pipeline: str = "verirag") -> AskResponse:
         started = perf_counter()
+        if mode not in {"live", "demo"}:
+            raise ValueError("mode must be 'live' or 'demo'")
+        if pipeline not in {"baseline", "verirag"}:
+            raise ValueError("pipeline must be 'baseline' or 'verirag'")
+        provider = DeterministicDemoProvider() if mode == "demo" else self.llm
         evidence = self.retrieve(question, top_k)
-        answer_data = self.llm.complete_json(ANSWER_SYSTEM, json.dumps({
+        answer_data = provider.complete_json(ANSWER_SYSTEM, json.dumps({
             "question": question,
             "evidence": [{"chunk_id": e.chunk_id, "filename": e.filename,
                           "page_number": e.page_number, "text": e.text} for e in evidence],
@@ -39,20 +46,25 @@ class RAGService:
         except (KeyError, ValueError, TypeError) as exc:
             raise LLMError("The answer model returned invalid structured output.") from exc
         citations = citations_for([by_id[item_id] for item_id in dict.fromkeys(source_ids)])
-        claims = extract_claims(answer, self.llm)
-        method = verifier or self.default_verifier
+        claims = [] if pipeline == "baseline" else extract_claims(answer, provider)
+        method = "llm" if mode == "demo" else (verifier or self.default_verifier)
         verify = heuristic_verify if method == "heuristic" else None
         results = []
         for claim in claims:
             claim_evidence = self.claim_retriever.retrieve(claim, top_k)
             results.append(verify(claim, claim_evidence) if verify
-                           else llm_verify(claim, claim_evidence, self.llm))
+                           else llm_verify(claim, claim_evidence, provider))
         return AskResponse(
             question=question, answer=answer, citations=citations, retrieved_evidence=evidence,
-            claims=results, verifier_method=("cosine_similarity_heuristic" if method == "heuristic"
-                                            else "evidence_conditioned_llm"),
+            claims=results, verifier_method=("conventional_rag_baseline" if pipeline == "baseline" else
+                                             "cosine_similarity_heuristic" if method == "heuristic"
+                                            else getattr(provider, "verifier_method", "evidence_conditioned_llm")),
+            generation_mode="deterministic_demo" if mode == "demo" else "live_llm",
+            pipeline=pipeline,
             latency_ms=round((perf_counter() - started) * 1000, 2),
-            limitations=["Claim labels are assessments of retrieved evidence, not proof of truth.",
+            limitations=(["DEMO MODE: answers and assessments are scripted fixtures, not LLM output.",
+                         "Use the bundled sample policy for the intended deterministic scenarios."]
+                         if mode == "demo" else []) + ["Claim labels are assessments of retrieved evidence, not proof of truth.",
                          "Each claim is independently searched, but retrieval can still miss relevant passages.",
                          "Results depend on document coverage, retrieval quality, and verifier quality."],
         )
