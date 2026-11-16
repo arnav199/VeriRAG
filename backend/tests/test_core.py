@@ -159,13 +159,15 @@ def test_malformed_llm_outputs_and_missing_key():
 
 
 def test_invalid_provider_key_has_useful_error_without_exposing_key(monkeypatch):
-    from urllib.error import HTTPError
+    import httpx
     import backend.app.services.llm as llm_module
 
     secret = "must-not-be-printed"
     def unauthorized(*args, **kwargs):
-        raise HTTPError("https://provider.invalid", 401, "Unauthorized", {}, None)
-    monkeypatch.setattr(llm_module, "urlopen", unauthorized)
+        request = httpx.Request("POST", "https://provider.invalid/v1/chat/completions")
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("Unauthorized", request=request, response=response)
+    monkeypatch.setattr(llm_module.httpx, "post", unauthorized)
     with pytest.raises(LLMError, match="rejected the configured API key") as raised:
         OpenAICompatibleProvider(secret, "https://provider.invalid/v1", "model").complete_json("s", "u")
     assert secret not in str(raised.value)
