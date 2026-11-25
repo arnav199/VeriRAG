@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f6f5" />
+    <title>VeriRAG</title>
+  </head>
+  <body>
+    <div id="root"><main style="max-width:620px;margin:12vh auto;padding:28px;font:15px/1.6 system-ui;color:#20352f"><strong>Starting VeriRAG…</strong><p>The interface will appear here in a moment.</p></main></div>
+    <script>
+      function showStartupFailure() {
+        if (document.documentElement.dataset.appMounted === 'true') return;
+        const root = document.getElementById('root');
+        if (root) root.innerHTML = '<main style="max-width:620px;margin:12vh auto;padding:28px;font:15px/1.6 system-ui;color:#20352f;background:#fff;border-radius:18px"><h1>VeriRAG could not start</h1><p>A frontend script failed to load. Refresh the page; if this repeats, open DevTools Console and share the first red error.</p></main>';
+      }
+      window.addEventListener('error', showStartupFailure);
+      window.addEventListener('unhandledrejection', showStartupFailure);
+    </script>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
