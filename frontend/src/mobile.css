@@ -1,0 +1,15 @@
+.mobile-menu-button,.mobile-close{display:none}
+
+@media(max-width:650px){
+  .mobile-menu-button{display:grid}
+  .mobile-close{display:none}
+  .sidebar.mobile-open{position:fixed;z-index:20;inset:10px auto 10px 10px;display:flex;width:min(310px,calc(100vw - 36px));height:auto;max-height:calc(100dvh - 20px);padding:16px 13px;background:var(--surface-strong)}
+  .sidebar.mobile-open .brand-row{display:flex;align-items:center;justify-content:space-between;width:100%;padding-bottom:14px}
+  .sidebar.mobile-open .brand-caption{display:none}
+  .sidebar.mobile-open .mobile-close{display:grid}
+  .sidebar.mobile-open .document-section,.sidebar.mobile-open .history-section,.sidebar.mobile-open .sidebar-foot{display:flex}
+  .sidebar.mobile-open .document-section{display:block}
+  .sidebar.mobile-open .history-section{display:flex}
+  .sidebar.mobile-open .sidebar-foot{display:flex}
+  .sidebar.mobile-open .new-chat-button{width:100%}
+}
